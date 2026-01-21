@@ -15,5 +15,10 @@
     <Copyright>Copyright MIT © 2026</Copyright>
     <PackageTags>hex ihex intel file read write</PackageTags>
     <PackageReleaseNotes>Version 2.0.0</PackageReleaseNotes>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 </Project>
