@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text;
 
 namespace ZoksIntelHex
 {
@@ -22,6 +23,13 @@ namespace ZoksIntelHex
 
         private uint _currentAddress = 0;
 
+        private const byte RecordTypeData = 0;
+        private const byte RecordTypeEof = 1;
+        private const byte RecordTypeExtendedSegmentAddress = 2;
+        private const byte RecordTypeStartSegmentAddress = 3;
+        private const byte RecordTypeExtendedLinearAddress = 4;
+        private const byte RecordTypeStartLinearAddress = 5;
+
         /// <summary>
         /// Create Intel hex format string of data in DataSegments.
         /// </summary>
@@ -29,7 +37,7 @@ namespace ZoksIntelHex
         public string CreateIntelHex()
         {
             var data = string.Concat(DataSegments.Select(segment => segment.ToIntelHex()));
-            return data + ":00000001FF\r\n"; // add eof record
+            return data + $":000000{RecordTypeEof:X2}FF\r\n"; // add eof record
         }
 
         /// <summary>
@@ -38,34 +46,41 @@ namespace ZoksIntelHex
         /// <param name="stream"></param>
         public void ReadIntelHex(Stream stream)
         {
-            var r = new StreamReader(stream);
+            using var r = new StreamReader(stream, Encoding.ASCII, true, 1024, leaveOpen: true);
             var line = r.ReadLine();
             while (line != null)
             {
+                line = line.Trim();
+                if (string.IsNullOrEmpty(line))
+                {
+                    line = r.ReadLine();
+                    continue;
+                }
+
                 try
                 {
                     if (line[0] != ':')
                     {
                         throw new InvalidDataException($"Invalid data format. Expected ':' instead of '{line[0]}'.");
                     }
-                    int dataLen;
-                    if (!int.TryParse(line.Substring(1, 2), NumberStyles.HexNumber, new NumberFormatInfo(), out dataLen))
+
+                    if (!int.TryParse(line.Substring(1, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var dataLen))
                     {
-                        throw new InvalidDataException($"Invalid data format. Expected line length number instead of '{line.Substring(1,2)}'.");
+                        throw new InvalidDataException($"Invalid data format. Expected line length number instead of '{line.Substring(1, 2)}'.");
                     }
-                    int recordAddress;
-                    if (!int.TryParse(line.Substring(3, 4), NumberStyles.HexNumber, new NumberFormatInfo(), out recordAddress))
+
+                    if (!int.TryParse(line.Substring(3, 4), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var recordAddress))
                     {
                         throw new InvalidDataException($"Invalid data format. Expected record address instead of '{line.Substring(3, 4)}'.");
                     }
-                    int recordType;
-                    if (!int.TryParse(line.Substring(7, 2), NumberStyles.HexNumber, new NumberFormatInfo(), out recordType))
+
+                    if (!int.TryParse(line.Substring(7, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var recordType))
                     {
                         throw new InvalidDataException($"Invalid data format. Expected record type instead of '{line.Substring(7, 2)}'.");
                     }
-                    var dataAscii = line.Substring(9, dataLen*2);
-                    byte checkSum;
-                    if (!byte.TryParse(line.Substring(9 + dataLen * 2, 2), NumberStyles.HexNumber, new NumberFormatInfo(), out checkSum))
+
+                    var dataAscii = line.Substring(9, dataLen * 2);
+                    if (!byte.TryParse(line.Substring(9 + dataLen * 2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var checkSum))
                     {
                         throw new InvalidDataException($"Invalid data format. Expected checksum instead of '{line.Substring(9 + dataLen * 2, 2)}'.");
                     }
@@ -73,43 +88,45 @@ namespace ZoksIntelHex
                     try
                     {
                         // get data as bytes
-                        var dataBytes = Enumerable.Range(0, dataLen)
-                            .Select(i => Convert.ToByte(dataAscii.Substring(i * 2, 2), 16)).ToArray();
-                        
+                        var dataBytes = new byte[dataLen];
+                        for (int i = 0; i < dataLen; i++)
+                        {
+                            dataBytes[i] = Convert.ToByte(dataAscii.Substring(i * 2, 2), 16);
+                        }
+
                         // verify checksum
-                        var allData = new List<byte>
+                        var sum = (byte)dataLen;
+                        sum += (byte)recordType;
+                        sum += (byte)(recordAddress & 0xFF);
+                        sum += (byte)((recordAddress >> 8) & 0xFF);
+                        foreach (var b in dataBytes) sum += b;
+
+                        var calculatedChecksum = (byte)((sum ^ 0xFF) + 1);
+
+                        if (checkSum != calculatedChecksum)
                         {
-                            (byte) dataLen,
-                            (byte) recordType,
-                            (byte) (recordAddress & 0xFF),
-                            (byte) (recordAddress >> 8)
-                        };
-                        allData.AddRange(dataBytes);
-                        var caluclatedChecksum = Utility.CaluclateChecksum(allData);
-                        if (checkSum != caluclatedChecksum)
-                        {
-                            throw new InvalidDataException($"Invalid record checksum. Expected '{checkSum}' but calculated '{caluclatedChecksum}'.");
+                            throw new InvalidDataException($"Invalid record checksum. Expected '{checkSum:X2}' but calculated '{calculatedChecksum:X2}'.");
                         }
 
                         // read record
                         switch (recordType)
                         {
-                            case 0: // Data
-                                GetSegment((uint) (recordAddress+_currentAddress)).Bytes.AddRange(dataBytes);
+                            case RecordTypeData: // Data
+                                GetSegment((uint)(recordAddress + _currentAddress)).Bytes.AddRange(dataBytes);
                                 break;
-                            case 1: // End of file
+                            case RecordTypeEof: // End of file
                                 return;
-                            case 2: // Extended Segment Address
-                                _currentAddress = Convert.ToUInt16(dataAscii, 16) * 16U;
+                            case RecordTypeExtendedSegmentAddress: // Extended Segment Address
+                                _currentAddress = Convert.ToUInt32(dataAscii, 16) * 16U;
                                 break;
-                            case 3: // Start Segment Address
+                            case RecordTypeStartSegmentAddress: // Start Segment Address
                                 CS = Convert.ToUInt16(dataAscii.Substring(0, 2), 16);
                                 IP = Convert.ToUInt16(dataAscii.Substring(2, 2), 16);
                                 break;
-                            case 4: // Extended Linear Address
+                            case RecordTypeExtendedLinearAddress: // Extended Linear Address
                                 _currentAddress = Convert.ToUInt32(dataAscii, 16) << 16;
                                 break;
-                            case 5: // Start Linear Address
+                            case RecordTypeStartLinearAddress: // Start Linear Address
                                 EIP = Convert.ToUInt32(dataAscii.Substring(0, 4), 16);
                                 break;
                             default:

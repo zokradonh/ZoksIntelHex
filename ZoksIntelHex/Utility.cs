@@ -5,9 +5,14 @@ namespace ZoksIntelHex
 {
     internal static class Utility
     {
-        public static byte CaluclateChecksum(IEnumerable<byte> bytes)
+        public static byte CalculateChecksum(IEnumerable<byte> bytes)
         {
-            return (byte) ((bytes.Sum(b => b) ^ 0xFF) + 1);
+            var sum = 0;
+            foreach (var b in bytes)
+            {
+                sum += b;
+            }
+            return (byte) (((sum & 0xFF) ^ 0xFF) + 1);
         }
     }
 }
